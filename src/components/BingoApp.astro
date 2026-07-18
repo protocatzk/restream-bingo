@@ -1,0 +1,404 @@
+---
+/**
+ * Client-hydrated bingo shell. All interactivity lives in the inline script
+ * so we stay zero-JS-framework for a tiny static deploy.
+ */
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_PHRASES,
+} from '../lib/bingo';
+
+const initialPhrases = DEFAULT_PHRASES.join('\n');
+const defaultTitle = DEFAULT_CONFIG.title;
+const defaultSize = DEFAULT_CONFIG.size;
+---
+
+<div class="app" id="bingo-app" data-base={import.meta.env.BASE_URL}>
+  <header class="header">
+    <div>
+      <h1>Restream Bingo</h1>
+      <p>Einfacher Prototyp – einstellbar, teilbar, statisch deploybar.</p>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="btn" id="btn-settings" aria-expanded="true">
+        Einstellungen
+      </button>
+      <button type="button" class="btn btn-primary" id="btn-new">
+        Neues Board
+      </button>
+    </div>
+  </header>
+
+  <section class="panel" id="settings-panel" aria-label="Einstellungen">
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="setup" role="tab">Setup</button>
+      <button type="button" class="tab" data-tab="share" role="tab">Teilen</button>
+    </div>
+
+    <div id="tab-setup">
+      <div class="field">
+        <label for="cfg-title">Titel</label>
+        <input type="text" id="cfg-title" value={defaultTitle} maxlength="80" />
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="cfg-size">Größe (n×n)</label>
+          <select id="cfg-size">
+            <option value="3">3×3</option>
+            <option value="4">4×4</option>
+            <option value="5" selected>5×5 (klassisch)</option>
+            <option value="6">6×6</option>
+            <option value="7">7×7</option>
+          </select>
+        </div>
+        <div class="field checkbox-field">
+          <input type="checkbox" id="cfg-free" checked />
+          <label for="cfg-free">Freies Mittelfeld</label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="cfg-seed">Seed (optional, für gleiches Board)</label>
+        <input type="text" id="cfg-seed" placeholder="z.B. stream-2026-07-18" />
+        <p class="field-hint">Gleicher Seed + gleiche Phrasen → gleiches Layout.</p>
+      </div>
+
+      <div class="field">
+        <label for="cfg-phrases">Phrasen (eine pro Zeile)</label>
+        <textarea id="cfg-phrases" spellcheck="false">{initialPhrases}</textarea>
+        <p class="field-hint" id="phrase-count"></p>
+      </div>
+
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="btn-apply">Übernehmen &amp; mischen</button>
+        <button type="button" class="btn" id="btn-reset-phrases">Standard-Phrasen</button>
+      </div>
+    </div>
+
+    <div id="tab-share" class="hidden">
+      <p class="field-hint" style="margin-bottom: 0.75rem;">
+        Link mit Konfiguration (ohne Markierungen). Ideal zum Teilen mit Zuschauern.
+      </p>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="btn-copy-link">Link kopieren</button>
+        <button type="button" class="btn" id="btn-copy-config">Config-JSON kopieren</button>
+      </div>
+      <div class="share-box" id="share-url" aria-live="polite">—</div>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="Bingo-Board">
+    <h2 class="bingo-title" id="board-title">{defaultTitle}</h2>
+    <div
+      class="bingo-board"
+      id="board"
+      role="grid"
+      aria-label="Bingo-Felder"
+      style={`grid-template-columns: repeat(${defaultSize}, 1fr);`}
+    >
+    </div>
+    <div class="status-bar">
+      <span class="status-message" id="status">Felder antippen zum Markieren</span>
+      <button type="button" class="btn btn-ghost hidden" id="btn-clear">Markierungen löschen</button>
+    </div>
+  </section>
+
+  <footer class="footer">
+    Astro · Static · Vercel / GitHub Pages ready
+  </footer>
+</div>
+
+<script>
+  import {
+    DEFAULT_CONFIG,
+    DEFAULT_PHRASES,
+    buildBoard,
+    encodeConfig,
+    decodeConfig,
+    findWin,
+    neededCells,
+    type BingoConfig,
+    type BingoCell,
+  } from '../lib/bingo';
+
+  const root = document.getElementById('bingo-app')!;
+  const base = root.dataset.base || '/';
+
+  const el = {
+    settingsPanel: document.getElementById('settings-panel')!,
+    btnSettings: document.getElementById('btn-settings')!,
+    btnNew: document.getElementById('btn-new')!,
+    btnApply: document.getElementById('btn-apply')!,
+    btnResetPhrases: document.getElementById('btn-reset-phrases')!,
+    btnCopyLink: document.getElementById('btn-copy-link')!,
+    btnCopyConfig: document.getElementById('btn-copy-config')!,
+    btnClear: document.getElementById('btn-clear')!,
+    title: document.getElementById('cfg-title') as HTMLInputElement,
+    size: document.getElementById('cfg-size') as HTMLSelectElement,
+    free: document.getElementById('cfg-free') as HTMLInputElement,
+    seed: document.getElementById('cfg-seed') as HTMLInputElement,
+    phrases: document.getElementById('cfg-phrases') as HTMLTextAreaElement,
+    phraseCount: document.getElementById('phrase-count')!,
+    boardTitle: document.getElementById('board-title')!,
+    board: document.getElementById('board')!,
+    status: document.getElementById('status')!,
+    shareUrl: document.getElementById('share-url')!,
+    tabSetup: document.getElementById('tab-setup')!,
+    tabShare: document.getElementById('tab-share')!,
+  };
+
+  let config: BingoConfig = { ...DEFAULT_CONFIG, phrases: [...DEFAULT_PHRASES] };
+  let cells: BingoCell[] = [];
+  let marked: boolean[] = [];
+  let winLine: number[] | null = null;
+
+  function parsePhrases(text: string): string[] {
+    return text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+  }
+
+  function readForm(): BingoConfig {
+    const size = Math.min(7, Math.max(3, Number(el.size.value) || 5));
+    return {
+      title: el.title.value.trim() || DEFAULT_CONFIG.title,
+      size,
+      freeCenter: el.free.checked,
+      phrases: parsePhrases(el.phrases.value),
+      seed: el.seed.value.trim() || undefined,
+    };
+  }
+
+  function writeForm(c: BingoConfig) {
+    el.title.value = c.title;
+    el.size.value = String(c.size);
+    el.free.checked = c.freeCenter;
+    el.seed.value = c.seed || '';
+    el.phrases.value = c.phrases.join('\n');
+    updatePhraseHint();
+  }
+
+  function updatePhraseHint() {
+    const n = parsePhrases(el.phrases.value).length;
+    const size = Number(el.size.value) || 5;
+    const need = neededCells(size, el.free.checked);
+    el.phraseCount.textContent =
+      n >= need
+        ? `${n} Phrasen · ${need} benötigt für ${size}×${size}`
+        : `${n} Phrasen · ${need} benötigt (wird zyklisch aufgefüllt)`;
+  }
+
+  function updateShareUrl() {
+    const encoded = encodeConfig(config);
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = '';
+    // Keep base path; set query on pathname
+    const path = url.pathname.endsWith('/') || base === '/' ? url.pathname : url.pathname + '/';
+    url.pathname = path;
+    url.searchParams.set('c', encoded);
+    el.shareUrl.textContent = url.toString();
+  }
+
+  function setStatus(msg: string, isWin = false) {
+    el.status.textContent = msg;
+    el.status.classList.toggle('win', isWin);
+  }
+
+  function renderBoard() {
+    el.boardTitle.textContent = config.title;
+    el.board.style.gridTemplateColumns = `repeat(${config.size}, 1fr)`;
+    el.board.innerHTML = '';
+
+    cells.forEach((cell, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bingo-cell';
+      btn.dataset.index = String(i);
+      btn.setAttribute('role', 'gridcell');
+      btn.setAttribute('aria-pressed', marked[i] ? 'true' : 'false');
+      btn.textContent = cell.text;
+
+      if (cell.free) btn.classList.add('free');
+      if (marked[i]) btn.classList.add('marked');
+      if (winLine?.includes(i)) btn.classList.add('win-line');
+
+      btn.addEventListener('click', () => toggleCell(i));
+      el.board.appendChild(btn);
+    });
+
+    el.btnClear.classList.toggle('hidden', !marked.some(Boolean) || !!winLine);
+  }
+
+  function checkWin() {
+    winLine = findWin(marked, config.size);
+    if (winLine) {
+      setStatus('🎉 BINGO!', true);
+      el.btnClear.classList.remove('hidden');
+      confettiLite();
+    } else {
+      const count = marked.filter(Boolean).length;
+      setStatus(count ? `${count} markiert · Felder antippen` : 'Felder antippen zum Markieren');
+    }
+    renderBoard();
+  }
+
+  function toggleCell(i: number) {
+    if (winLine) return;
+    // Free center starts marked; still allow toggle
+    marked[i] = !marked[i];
+    checkWin();
+  }
+
+  function newBoard(fromConfig?: BingoConfig) {
+    config = fromConfig ?? readForm();
+    // If no seed, randomize each "new board"
+    if (!config.seed) {
+      config = { ...config, seed: undefined };
+    }
+    cells = buildBoard(config);
+    marked = cells.map((c) => c.free);
+    winLine = null;
+    writeForm(config);
+    updateShareUrl();
+    checkWin();
+    // Persist light prefs
+    try {
+      localStorage.setItem('bingo-config', JSON.stringify(config));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function confettiLite() {
+    // Tiny CSS confetti without deps
+    const n = 24;
+    for (let i = 0; i < n; i++) {
+      const d = document.createElement('div');
+      d.style.cssText = `
+        position:fixed;top:-10px;left:${Math.random() * 100}vw;width:8px;height:8px;
+        background:hsl(${260 + Math.random() * 80},80%,60%);border-radius:2px;z-index:9999;
+        pointer-events:none;animation:fall ${1.2 + Math.random()}s linear forwards;
+      `;
+      document.body.appendChild(d);
+      setTimeout(() => d.remove(), 2200);
+    }
+    if (!document.getElementById('confetti-style')) {
+      const s = document.createElement('style');
+      s.id = 'confetti-style';
+      s.textContent = `@keyframes fall{to{transform:translateY(100vh) rotate(720deg);opacity:0}}`;
+      document.head.appendChild(s);
+    }
+  }
+
+  // Tabs
+  root.querySelectorAll('.tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      root.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+      tab.classList.add('active');
+      const name = (tab as HTMLElement).dataset.tab;
+      el.tabSetup.classList.toggle('hidden', name !== 'setup');
+      el.tabShare.classList.toggle('hidden', name !== 'share');
+      if (name === 'share') updateShareUrl();
+    });
+  });
+
+  el.btnSettings.addEventListener('click', () => {
+    const open = el.settingsPanel.classList.toggle('hidden');
+    el.btnSettings.setAttribute('aria-expanded', String(!open));
+  });
+
+  el.btnApply.addEventListener('click', () => newBoard());
+  el.btnNew.addEventListener('click', () => {
+    // Force reshuffle: clear seed temporarily unless user wants fixed seed
+    const c = readForm();
+    if (!c.seed) {
+      c.seed = String(Date.now());
+      // Don't write ephemeral seed back into form — keep empty for random
+      const boardConfig = { ...c, seed: c.seed };
+      config = boardConfig;
+      cells = buildBoard(boardConfig);
+      marked = cells.map((x) => x.free);
+      winLine = null;
+      el.boardTitle.textContent = config.title;
+      updateShareUrl();
+      checkWin();
+      try {
+        localStorage.setItem('bingo-config', JSON.stringify({ ...c, seed: undefined }));
+      } catch {
+        /* ignore */
+      }
+    } else {
+      newBoard(c);
+    }
+  });
+
+  el.btnResetPhrases.addEventListener('click', () => {
+    el.phrases.value = DEFAULT_PHRASES.join('\n');
+    updatePhraseHint();
+  });
+
+  el.btnClear.addEventListener('click', () => {
+    marked = cells.map((c) => c.free);
+    winLine = null;
+    checkWin();
+  });
+
+  el.phrases.addEventListener('input', updatePhraseHint);
+  el.size.addEventListener('change', updatePhraseHint);
+  el.free.addEventListener('change', updatePhraseHint);
+
+  async function copyText(text: string, okMsg: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus(okMsg);
+    } catch {
+      setStatus('Kopieren fehlgeschlagen – Text manuell markieren');
+    }
+  }
+
+  el.btnCopyLink.addEventListener('click', () => {
+    updateShareUrl();
+    void copyText(el.shareUrl.textContent || '', 'Link kopiert!');
+  });
+
+  el.btnCopyConfig.addEventListener('click', () => {
+    void copyText(JSON.stringify(config, null, 2), 'Config-JSON kopiert!');
+  });
+
+  // Boot: URL config > localStorage > defaults
+  function boot() {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('c');
+    if (fromUrl) {
+      const decoded = decodeConfig(fromUrl);
+      if (decoded) {
+        newBoard(decoded);
+        return;
+      }
+    }
+    try {
+      const raw = localStorage.getItem('bingo-config');
+      if (raw) {
+        const saved = JSON.parse(raw) as BingoConfig;
+        if (saved && Array.isArray(saved.phrases)) {
+          newBoard({
+            title: saved.title || DEFAULT_CONFIG.title,
+            size: Math.min(7, Math.max(3, Number(saved.size) || 5)),
+            freeCenter: !!saved.freeCenter,
+            phrases: saved.phrases.length ? saved.phrases : DEFAULT_PHRASES,
+            seed: saved.seed,
+          });
+          return;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    newBoard(DEFAULT_CONFIG);
+  }
+
+  boot();
+</script>
