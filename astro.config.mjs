@@ -1,8 +1,10 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 
-// Static site → works on Vercel and GitHub Pages.
-// For GitHub Pages project sites, set base to '/restream-bingo/' (repo name).
+/**
+ * Static site for Vercel (BASE_PATH=/) and GitHub Pages (BASE_PATH=/repo-name/).
+ * Set via env in CI; defaults work for local dev and Vercel.
+ */
 const base = process.env.BASE_PATH || '/';
 
 export default defineConfig({

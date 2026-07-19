@@ -1,9 +1,14 @@
-# build output
+# build
 dist/
 .output/
+.vercel/
 
-# dependencies
+# deps
 node_modules/
+
+# package managers (this project uses yarn)
+package-lock.json
+pnpm-lock.yaml
 
 # logs
 npm-debug.log*
@@ -11,12 +16,16 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# environment
+# env
 .env
-.env.production
+.env.*
+!.env.example
 
-# macOS
+# OS / editor
 .DS_Store
+*.swp
+.idea/
+.vscode/
 
 # astro
 .astro/

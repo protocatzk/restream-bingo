@@ -1,92 +1,173 @@
 ---
-/**
- * Client-hydrated bingo shell. All interactivity lives in the inline script
- * so we stay zero-JS-framework for a tiny static deploy.
- */
 import {
   DEFAULT_CONFIG,
   DEFAULT_PHRASES,
+  type BingoConfig,
 } from '../lib/bingo';
 
-const initialPhrases = DEFAULT_PHRASES.join('\n');
-const defaultTitle = DEFAULT_CONFIG.title;
-const defaultSize = DEFAULT_CONFIG.size;
+interface Props {
+  brand?: string;
+  subtitle?: string;
+  /** Named preset id (e.g. dkm) – skips home localStorage */
+  presetId?: string;
+  /** Fixed board config from a preset page */
+  presetConfig?: BingoConfig;
+  /** Precomputed share token for the preset (optional display) */
+  shareToken?: string;
+  /** Lock setup: no reshuffle / no phrase edits, clean share path */
+  locked?: boolean;
+}
+
+const {
+  brand = 'Restream Bingo',
+  subtitle = 'Einstellbar · teilbar · statisch deploybar',
+  presetId,
+  presetConfig,
+  shareToken = '',
+  locked = false,
+} = Astro.props;
+
+const bootConfig: BingoConfig = presetConfig
+  ? {
+      ...presetConfig,
+      phrases: [...presetConfig.phrases],
+    }
+  : { ...DEFAULT_CONFIG, phrases: [...DEFAULT_PHRASES] };
+
+const initialPhrases = bootConfig.phrases.join('\n');
+const defaultTitle = bootConfig.title;
+const defaultSize = bootConfig.size;
+const defaultSeed = bootConfig.seed ?? '';
+const defaultFree = bootConfig.freeCenter;
+const presetJson = JSON.stringify(bootConfig);
 ---
 
-<div class="app" id="bingo-app" data-base={import.meta.env.BASE_URL}>
+<div
+  class="app"
+  id="bingo-app"
+  data-base={import.meta.env.BASE_URL}
+  data-preset-id={presetId ?? ''}
+  data-preset={presetConfig ? presetJson : ''}
+  data-share-token={shareToken}
+  data-locked={locked ? '1' : '0'}
+>
   <header class="header">
     <div>
-      <h1>Restream Bingo</h1>
-      <p>Einfacher Prototyp – einstellbar, teilbar, statisch deploybar.</p>
+      <h1>{brand}</h1>
+      <p class="subtitle">{subtitle}</p>
     </div>
     <div class="btn-row">
-      <button type="button" class="btn" id="btn-settings" aria-expanded="true">
-        Einstellungen
-      </button>
+      {
+        !locked && (
+          <button type="button" class="btn" id="btn-settings" aria-expanded="true">
+            Einstellungen
+          </button>
+        )
+      }
+      {
+        locked ? (
+          <button type="button" class="btn" id="btn-clear-header">Markierungen löschen</button>
+        ) : null
+      }
       <button type="button" class="btn btn-primary" id="btn-new">
-        Neues Board
+        {locked ? 'Board zurücksetzen' : 'Neues Board'}
       </button>
+      {
+        locked && (
+          <button type="button" class="btn" id="btn-copy-link-header">Link kopieren</button>
+        )
+      }
     </div>
   </header>
 
-  <section class="panel" id="settings-panel" aria-label="Einstellungen">
-    <div class="tabs" role="tablist">
-      <button type="button" class="tab active" data-tab="setup" role="tab">Setup</button>
-      <button type="button" class="tab" data-tab="share" role="tab">Teilen</button>
-    </div>
-
-    <div id="tab-setup">
-      <div class="field">
-        <label for="cfg-title">Titel</label>
-        <input type="text" id="cfg-title" value={defaultTitle} maxlength="80" />
-      </div>
-
-      <div class="field-row">
-        <div class="field">
-          <label for="cfg-size">Größe (n×n)</label>
-          <select id="cfg-size">
-            <option value="3">3×3</option>
-            <option value="4">4×4</option>
-            <option value="5" selected>5×5 (klassisch)</option>
-            <option value="6">6×6</option>
-            <option value="7">7×7</option>
-          </select>
+  {
+    !locked ? (
+      <section class="panel" id="settings-panel" aria-label="Einstellungen">
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-tab="setup" role="tab">Setup</button>
+          <button type="button" class="tab" data-tab="share" role="tab">Teilen</button>
         </div>
-        <div class="field checkbox-field">
-          <input type="checkbox" id="cfg-free" checked />
-          <label for="cfg-free">Freies Mittelfeld</label>
+
+        <div id="tab-setup">
+          <div class="field">
+            <label for="cfg-title">Titel</label>
+            <input
+              type="text"
+              id="cfg-title"
+              value={defaultTitle}
+              maxlength="80"
+              autocomplete="off"
+            />
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="cfg-size">Größe</label>
+              <select id="cfg-size">
+                {[3, 4, 5, 6, 7].map((n) => (
+                  <option value={n} selected={n === defaultSize}>
+                    {n}×{n}
+                    {n === 5 ? ' (klassisch)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div class="field checkbox-field">
+              <input type="checkbox" id="cfg-free" checked={defaultFree} />
+              <label for="cfg-free">Freies Mittelfeld</label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="cfg-seed">Seed (optional)</label>
+            <input
+              type="text"
+              id="cfg-seed"
+              value={defaultSeed}
+              placeholder="z.B. stream-2026-07-19"
+              autocomplete="off"
+            />
+            <p class="field-hint">Gleicher Seed + gleiche Phrasen → gleiches Board für alle.</p>
+          </div>
+
+          <div class="field">
+            <label for="cfg-phrases">Phrasen (eine pro Zeile)</label>
+            <textarea id="cfg-phrases" spellcheck="false">{initialPhrases}</textarea>
+            <p class="field-hint" id="phrase-count"></p>
+          </div>
+
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="btn-apply">
+              Übernehmen &amp; mischen
+            </button>
+            <button type="button" class="btn" id="btn-reset-phrases">Standard-Phrasen</button>
+          </div>
         </div>
-      </div>
 
-      <div class="field">
-        <label for="cfg-seed">Seed (optional, für gleiches Board)</label>
-        <input type="text" id="cfg-seed" placeholder="z.B. stream-2026-07-18" />
-        <p class="field-hint">Gleicher Seed + gleiche Phrasen → gleiches Layout.</p>
-      </div>
-
-      <div class="field">
-        <label for="cfg-phrases">Phrasen (eine pro Zeile)</label>
-        <textarea id="cfg-phrases" spellcheck="false">{initialPhrases}</textarea>
-        <p class="field-hint" id="phrase-count"></p>
-      </div>
-
-      <div class="btn-row">
-        <button type="button" class="btn btn-primary" id="btn-apply">Übernehmen &amp; mischen</button>
-        <button type="button" class="btn" id="btn-reset-phrases">Standard-Phrasen</button>
-      </div>
-    </div>
-
-    <div id="tab-share" class="hidden">
-      <p class="field-hint" style="margin-bottom: 0.75rem;">
-        Link mit Konfiguration (ohne Markierungen). Ideal zum Teilen mit Zuschauern.
-      </p>
-      <div class="btn-row">
-        <button type="button" class="btn btn-primary" id="btn-copy-link">Link kopieren</button>
-        <button type="button" class="btn" id="btn-copy-config">Config-JSON kopieren</button>
-      </div>
-      <div class="share-box" id="share-url" aria-live="polite">—</div>
-    </div>
-  </section>
+        <div id="tab-share" class="hidden">
+          <p class="field-hint" style="margin-bottom: 0.75rem">
+            Kurzer Link mit Konfiguration (ohne Markierungen). Standard-Phrasen werden weggelassen
+            und komprimiert.
+          </p>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="btn-copy-link">Link kopieren</button>
+            <button type="button" class="btn" id="btn-copy-config">Config-JSON kopieren</button>
+          </div>
+          <div class="share-box" id="share-url" aria-live="polite">—</div>
+        </div>
+      </section>
+    ) : (
+      <section class="panel share-slim" aria-label="Teilen">
+        <p class="field-hint" style="margin: 0 0 0.6rem">
+          Gleicher Link für alle – Board &amp; Seed sind fest.
+        </p>
+        <div class="btn-row">
+          <button type="button" class="btn btn-primary" id="btn-copy-link">Link kopieren</button>
+        </div>
+        <div class="share-box" id="share-url" aria-live="polite">—</div>
+      </section>
+    )
+  }
 
   <section class="panel" aria-label="Bingo-Board">
     <h2 class="bingo-title" id="board-title">{defaultTitle}</h2>
@@ -100,12 +181,22 @@ const defaultSize = DEFAULT_CONFIG.size;
     </div>
     <div class="status-bar">
       <span class="status-message" id="status">Felder antippen zum Markieren</span>
-      <button type="button" class="btn btn-ghost hidden" id="btn-clear">Markierungen löschen</button>
+      <button type="button" class="btn btn-ghost hidden" id="btn-clear">
+        Markierungen löschen
+      </button>
     </div>
   </section>
 
   <footer class="footer">
-    Astro · Static · Vercel / GitHub Pages ready
+    {
+      presetId ? (
+        <>
+          <a href={import.meta.env.BASE_URL}>← Start</a>
+          {' · '}
+        </>
+      ) : null
+    }
+    Astro · Static · Vercel / GitHub Pages
   </footer>
 </div>
 
@@ -114,91 +205,125 @@ const defaultSize = DEFAULT_CONFIG.size;
     DEFAULT_CONFIG,
     DEFAULT_PHRASES,
     buildBoard,
-    encodeConfig,
+    clampSize,
     decodeConfig,
+    encodeConfig,
     findWin,
     neededCells,
-    type BingoConfig,
+    parsePhrases,
     type BingoCell,
+    type BingoConfig,
   } from '../lib/bingo';
 
   const root = document.getElementById('bingo-app')!;
   const base = root.dataset.base || '/';
+  const presetId = root.dataset.presetId || '';
+  const locked = root.dataset.locked === '1';
+  const bakedToken = root.dataset.shareToken || '';
+
+  let presetConfig: BingoConfig | null = null;
+  try {
+    if (root.dataset.preset) {
+      presetConfig = JSON.parse(root.dataset.preset) as BingoConfig;
+    }
+  } catch {
+    presetConfig = null;
+  }
 
   const el = {
-    settingsPanel: document.getElementById('settings-panel')!,
-    btnSettings: document.getElementById('btn-settings')!,
+    settingsPanel: document.getElementById('settings-panel'),
+    btnSettings: document.getElementById('btn-settings'),
     btnNew: document.getElementById('btn-new')!,
-    btnApply: document.getElementById('btn-apply')!,
-    btnResetPhrases: document.getElementById('btn-reset-phrases')!,
+    btnApply: document.getElementById('btn-apply'),
+    btnResetPhrases: document.getElementById('btn-reset-phrases'),
     btnCopyLink: document.getElementById('btn-copy-link')!,
-    btnCopyConfig: document.getElementById('btn-copy-config')!,
+    btnCopyLinkHeader: document.getElementById('btn-copy-link-header'),
+    btnCopyConfig: document.getElementById('btn-copy-config'),
     btnClear: document.getElementById('btn-clear')!,
-    title: document.getElementById('cfg-title') as HTMLInputElement,
-    size: document.getElementById('cfg-size') as HTMLSelectElement,
-    free: document.getElementById('cfg-free') as HTMLInputElement,
-    seed: document.getElementById('cfg-seed') as HTMLInputElement,
-    phrases: document.getElementById('cfg-phrases') as HTMLTextAreaElement,
-    phraseCount: document.getElementById('phrase-count')!,
+    btnClearHeader: document.getElementById('btn-clear-header'),
+    title: document.getElementById('cfg-title') as HTMLInputElement | null,
+    size: document.getElementById('cfg-size') as HTMLSelectElement | null,
+    free: document.getElementById('cfg-free') as HTMLInputElement | null,
+    seed: document.getElementById('cfg-seed') as HTMLInputElement | null,
+    phrases: document.getElementById('cfg-phrases') as HTMLTextAreaElement | null,
+    phraseCount: document.getElementById('phrase-count'),
     boardTitle: document.getElementById('board-title')!,
     board: document.getElementById('board')!,
     status: document.getElementById('status')!,
     shareUrl: document.getElementById('share-url')!,
-    tabSetup: document.getElementById('tab-setup')!,
-    tabShare: document.getElementById('tab-share')!,
+    tabSetup: document.getElementById('tab-setup'),
+    tabShare: document.getElementById('tab-share'),
   };
 
-  let config: BingoConfig = { ...DEFAULT_CONFIG, phrases: [...DEFAULT_PHRASES] };
+  let config: BingoConfig = presetConfig
+    ? { ...presetConfig, phrases: [...presetConfig.phrases] }
+    : { ...DEFAULT_CONFIG, phrases: [...DEFAULT_PHRASES] };
   let cells: BingoCell[] = [];
   let marked: boolean[] = [];
   let winLine: number[] | null = null;
 
-  function parsePhrases(text: string): string[] {
-    return text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
+  function storageKey(): string {
+    return presetId ? `bingo-preset:${presetId}` : 'bingo-config';
+  }
+
+  function marksKey(): string {
+    return presetId ? `bingo-marks:${presetId}` : 'bingo-marks';
   }
 
   function readForm(): BingoConfig {
-    const size = Math.min(7, Math.max(3, Number(el.size.value) || 5));
+    if (presetConfig && locked) {
+      return { ...presetConfig, phrases: [...presetConfig.phrases] };
+    }
     return {
-      title: el.title.value.trim() || DEFAULT_CONFIG.title,
-      size,
-      freeCenter: el.free.checked,
-      phrases: parsePhrases(el.phrases.value),
-      seed: el.seed.value.trim() || undefined,
+      title: el.title?.value.trim() || DEFAULT_CONFIG.title,
+      size: clampSize(Number(el.size?.value) || 5),
+      freeCenter: el.free?.checked ?? true,
+      phrases: parsePhrases(el.phrases?.value ?? ''),
+      seed: el.seed?.value.trim() || undefined,
     };
   }
 
   function writeForm(c: BingoConfig) {
+    if (!el.title) return;
     el.title.value = c.title;
-    el.size.value = String(c.size);
-    el.free.checked = c.freeCenter;
-    el.seed.value = c.seed || '';
-    el.phrases.value = c.phrases.join('\n');
+    if (el.size) el.size.value = String(c.size);
+    if (el.free) el.free.checked = c.freeCenter;
+    if (el.seed) el.seed.value = c.seed || '';
+    if (el.phrases) el.phrases.value = c.phrases.join('\n');
     updatePhraseHint();
   }
 
   function updatePhraseHint() {
+    if (!el.phraseCount || !el.phrases) return;
     const n = parsePhrases(el.phrases.value).length;
-    const size = Number(el.size.value) || 5;
-    const need = neededCells(size, el.free.checked);
+    const size = clampSize(Number(el.size?.value) || 5);
+    const need = neededCells(size, el.free?.checked ?? true);
     el.phraseCount.textContent =
       n >= need
         ? `${n} Phrasen · ${need} benötigt für ${size}×${size}`
         : `${n} Phrasen · ${need} benötigt (wird zyklisch aufgefüllt)`;
   }
 
-  function updateShareUrl() {
-    const encoded = encodeConfig(config);
+  async function updateShareUrl() {
+    // Locked presets share the clean path (e.g. /dkm) – config is baked in
+    if (locked && presetId) {
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.hash = '';
+      // normalize trailing slash for BASE_PATH
+      const path = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+      url.pathname = path;
+      el.shareUrl.textContent = url.toString();
+      return;
+    }
+
+    const token = bakedToken || (await encodeConfig(config));
     const url = new URL(window.location.href);
     url.search = '';
-    url.hash = '';
-    // Keep base path; set query on pathname
-    const path = url.pathname.endsWith('/') || base === '/' ? url.pathname : url.pathname + '/';
+    const path =
+      url.pathname.endsWith('/') || base === '/' ? url.pathname : `${url.pathname}/`;
     url.pathname = path;
-    url.searchParams.set('c', encoded);
+    url.hash = token;
     el.shareUrl.textContent = url.toString();
   }
 
@@ -207,10 +332,30 @@ const defaultSize = DEFAULT_CONFIG.size;
     el.status.classList.toggle('win', isWin);
   }
 
+  function saveMarks() {
+    try {
+      localStorage.setItem(marksKey(), JSON.stringify(marked));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function loadMarks(expectedLen: number): boolean[] | null {
+    try {
+      const raw = localStorage.getItem(marksKey());
+      if (!raw) return null;
+      const arr = JSON.parse(raw) as boolean[];
+      if (!Array.isArray(arr) || arr.length !== expectedLen) return null;
+      return arr.map(Boolean);
+    } catch {
+      return null;
+    }
+  }
+
   function renderBoard() {
     el.boardTitle.textContent = config.title;
     el.board.style.gridTemplateColumns = `repeat(${config.size}, 1fr)`;
-    el.board.innerHTML = '';
+    el.board.replaceChildren();
 
     cells.forEach((cell, i) => {
       const btn = document.createElement('button');
@@ -220,175 +365,207 @@ const defaultSize = DEFAULT_CONFIG.size;
       btn.setAttribute('role', 'gridcell');
       btn.setAttribute('aria-pressed', marked[i] ? 'true' : 'false');
       btn.textContent = cell.text;
-
       if (cell.free) btn.classList.add('free');
       if (marked[i]) btn.classList.add('marked');
       if (winLine?.includes(i)) btn.classList.add('win-line');
-
       btn.addEventListener('click', () => toggleCell(i));
       el.board.appendChild(btn);
     });
 
-    el.btnClear.classList.toggle('hidden', !marked.some(Boolean) || !!winLine);
+    el.btnClear.classList.toggle('hidden', !marked.some(Boolean));
+  }
+
+  function confettiLite() {
+    const n = 28;
+    for (let i = 0; i < n; i++) {
+      const d = document.createElement('div');
+      d.style.cssText = `
+        position:fixed;top:-12px;left:${Math.random() * 100}vw;
+        width:${6 + Math.random() * 6}px;height:${6 + Math.random() * 6}px;
+        background:hsl(${250 + Math.random() * 90},85%,62%);
+        border-radius:2px;z-index:9999;pointer-events:none;
+        animation:fall ${1.1 + Math.random()}s linear forwards;
+      `;
+      document.body.appendChild(d);
+      setTimeout(() => d.remove(), 2300);
+    }
+    if (!document.getElementById('confetti-style')) {
+      const s = document.createElement('style');
+      s.id = 'confetti-style';
+      s.textContent =
+        '@keyframes fall{to{transform:translateY(105vh) rotate(720deg);opacity:0}}';
+      document.head.appendChild(s);
+    }
   }
 
   function checkWin() {
     winLine = findWin(marked, config.size);
     if (winLine) {
       setStatus('🎉 BINGO!', true);
-      el.btnClear.classList.remove('hidden');
       confettiLite();
     } else {
       const count = marked.filter(Boolean).length;
       setStatus(count ? `${count} markiert · Felder antippen` : 'Felder antippen zum Markieren');
     }
     renderBoard();
+    saveMarks();
   }
 
   function toggleCell(i: number) {
     if (winLine) return;
-    // Free center starts marked; still allow toggle
     marked[i] = !marked[i];
     checkWin();
   }
 
-  function newBoard(fromConfig?: BingoConfig) {
-    config = fromConfig ?? readForm();
-    // If no seed, randomize each "new board"
-    if (!config.seed) {
-      config = { ...config, seed: undefined };
-    }
-    cells = buildBoard(config);
-    marked = cells.map((c) => c.free);
-    winLine = null;
-    writeForm(config);
-    updateShareUrl();
-    checkWin();
-    // Persist light prefs
+  function persist(c: BingoConfig) {
+    if (locked) return;
     try {
-      localStorage.setItem('bingo-config', JSON.stringify(config));
+      localStorage.setItem(storageKey(), JSON.stringify(c));
     } catch {
       /* ignore */
     }
   }
 
-  function confettiLite() {
-    // Tiny CSS confetti without deps
-    const n = 24;
-    for (let i = 0; i < n; i++) {
-      const d = document.createElement('div');
-      d.style.cssText = `
-        position:fixed;top:-10px;left:${Math.random() * 100}vw;width:8px;height:8px;
-        background:hsl(${260 + Math.random() * 80},80%,60%);border-radius:2px;z-index:9999;
-        pointer-events:none;animation:fall ${1.2 + Math.random()}s linear forwards;
-      `;
-      document.body.appendChild(d);
-      setTimeout(() => d.remove(), 2200);
-    }
-    if (!document.getElementById('confetti-style')) {
-      const s = document.createElement('style');
-      s.id = 'confetti-style';
-      s.textContent = `@keyframes fall{to{transform:translateY(100vh) rotate(720deg);opacity:0}}`;
-      document.head.appendChild(s);
-    }
+  function newBoard(from?: BingoConfig, restoreMarks = false) {
+    config = from ?? readForm();
+    config = {
+      ...config,
+      size: clampSize(config.size),
+      phrases: config.phrases.length ? config.phrases : [...DEFAULT_PHRASES],
+    };
+    cells = buildBoard(config);
+    const restored = restoreMarks ? loadMarks(cells.length) : null;
+    marked = restored ?? cells.map((c) => c.free);
+    winLine = null;
+    writeForm(config);
+    void updateShareUrl();
+    checkWin();
+    persist({ ...config, seed: config.seed });
   }
 
-  // Tabs
+  function clearMarks() {
+    marked = cells.map((c) => c.free);
+    winLine = null;
+    checkWin();
+  }
+
+  // ── Tabs (home only) ────────────────────────────────────────────────────
+
   root.querySelectorAll('.tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       root.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
       tab.classList.add('active');
       const name = (tab as HTMLElement).dataset.tab;
-      el.tabSetup.classList.toggle('hidden', name !== 'setup');
-      el.tabShare.classList.toggle('hidden', name !== 'share');
-      if (name === 'share') updateShareUrl();
+      el.tabSetup?.classList.toggle('hidden', name !== 'setup');
+      el.tabShare?.classList.toggle('hidden', name !== 'share');
+      if (name === 'share') void updateShareUrl();
     });
   });
 
-  el.btnSettings.addEventListener('click', () => {
-    const open = el.settingsPanel.classList.toggle('hidden');
-    el.btnSettings.setAttribute('aria-expanded', String(!open));
+  el.btnSettings?.addEventListener('click', () => {
+    if (!el.settingsPanel) return;
+    const hidden = el.settingsPanel.classList.toggle('hidden');
+    el.btnSettings?.setAttribute('aria-expanded', String(!hidden));
   });
 
-  el.btnApply.addEventListener('click', () => newBoard());
+  el.btnApply?.addEventListener('click', () => newBoard());
+
   el.btnNew.addEventListener('click', () => {
-    // Force reshuffle: clear seed temporarily unless user wants fixed seed
-    const c = readForm();
-    if (!c.seed) {
-      c.seed = String(Date.now());
-      // Don't write ephemeral seed back into form — keep empty for random
-      const boardConfig = { ...c, seed: c.seed };
-      config = boardConfig;
-      cells = buildBoard(boardConfig);
-      marked = cells.map((x) => x.free);
-      winLine = null;
-      el.boardTitle.textContent = config.title;
-      updateShareUrl();
-      checkWin();
-      try {
-        localStorage.setItem('bingo-config', JSON.stringify({ ...c, seed: undefined }));
-      } catch {
-        /* ignore */
-      }
-    } else {
-      newBoard(c);
+    if (locked && presetConfig) {
+      // Same board, clear marks
+      clearMarks();
+      setStatus('Board zurückgesetzt');
+      return;
     }
+    const c = readForm();
+    if (c.seed) {
+      newBoard(c);
+      return;
+    }
+    const ephemeral = { ...c, seed: String(Date.now()) };
+    config = ephemeral;
+    cells = buildBoard(ephemeral);
+    marked = cells.map((x) => x.free);
+    winLine = null;
+    el.boardTitle.textContent = config.title;
+    void updateShareUrl();
+    checkWin();
+    persist({ ...c, seed: undefined });
   });
 
-  el.btnResetPhrases.addEventListener('click', () => {
-    el.phrases.value = DEFAULT_PHRASES.join('\n');
+  el.btnResetPhrases?.addEventListener('click', () => {
+    if (el.phrases) el.phrases.value = DEFAULT_PHRASES.join('\n');
     updatePhraseHint();
   });
 
-  el.btnClear.addEventListener('click', () => {
-    marked = cells.map((c) => c.free);
-    winLine = null;
-    checkWin();
-  });
+  el.btnClear.addEventListener('click', clearMarks);
+  el.btnClearHeader?.addEventListener('click', clearMarks);
 
-  el.phrases.addEventListener('input', updatePhraseHint);
-  el.size.addEventListener('change', updatePhraseHint);
-  el.free.addEventListener('change', updatePhraseHint);
+  el.phrases?.addEventListener('input', updatePhraseHint);
+  el.size?.addEventListener('change', updatePhraseHint);
+  el.free?.addEventListener('change', updatePhraseHint);
 
-  async function copyText(text: string, okMsg: string) {
+  async function copyText(text: string, ok: string) {
     try {
       await navigator.clipboard.writeText(text);
-      setStatus(okMsg);
+      setStatus(ok);
     } catch {
       setStatus('Kopieren fehlgeschlagen – Text manuell markieren');
     }
   }
 
-  el.btnCopyLink.addEventListener('click', () => {
-    updateShareUrl();
-    void copyText(el.shareUrl.textContent || '', 'Link kopiert!');
-  });
+  async function copyShareLink() {
+    await updateShareUrl();
+    await copyText(el.shareUrl.textContent || '', 'Link kopiert!');
+  }
 
-  el.btnCopyConfig.addEventListener('click', () => {
+  el.btnCopyLink.addEventListener('click', () => void copyShareLink());
+  el.btnCopyLinkHeader?.addEventListener('click', () => void copyShareLink());
+
+  el.btnCopyConfig?.addEventListener('click', () => {
     void copyText(JSON.stringify(config, null, 2), 'Config-JSON kopiert!');
   });
 
-  // Boot: URL config > localStorage > defaults
-  function boot() {
+  function readShareToken(): string | null {
+    const hash = window.location.hash.replace(/^#/, '').trim();
+    if (hash) {
+      if (hash.startsWith('b=')) return decodeURIComponent(hash.slice(2));
+      if (hash.startsWith('2.') || hash.startsWith('3.')) return hash;
+      if (hash.length > 8) return hash;
+    }
     const params = new URLSearchParams(window.location.search);
-    const fromUrl = params.get('c');
-    if (fromUrl) {
-      const decoded = decodeConfig(fromUrl);
+    return params.get('b') || params.get('c');
+  }
+
+  async function boot() {
+    // Preset pages always load their fixed board (marks may restore)
+    if (presetConfig) {
+      newBoard(
+        { ...presetConfig, phrases: [...presetConfig.phrases] },
+        true,
+      );
+      return;
+    }
+
+    const token = readShareToken();
+    if (token) {
+      const decoded = await decodeConfig(token);
       if (decoded) {
         newBoard(decoded);
         return;
       }
     }
+
     try {
-      const raw = localStorage.getItem('bingo-config');
+      const raw = localStorage.getItem(storageKey());
       if (raw) {
         const saved = JSON.parse(raw) as BingoConfig;
         if (saved && Array.isArray(saved.phrases)) {
           newBoard({
             title: saved.title || DEFAULT_CONFIG.title,
-            size: Math.min(7, Math.max(3, Number(saved.size) || 5)),
+            size: clampSize(Number(saved.size) || 5),
             freeCenter: !!saved.freeCenter,
-            phrases: saved.phrases.length ? saved.phrases : DEFAULT_PHRASES,
+            phrases: saved.phrases.length ? saved.phrases : [...DEFAULT_PHRASES],
             seed: saved.seed,
           });
           return;
@@ -397,8 +574,9 @@ const defaultSize = DEFAULT_CONFIG.size;
     } catch {
       /* ignore */
     }
-    newBoard(DEFAULT_CONFIG);
+
+    newBoard({ ...DEFAULT_CONFIG, phrases: [...DEFAULT_PHRASES] });
   }
 
-  boot();
+  void boot();
 </script>

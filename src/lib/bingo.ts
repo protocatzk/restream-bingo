@@ -1,5 +1,5 @@
-/** Default streamer / chat bingo phrases (German-friendly for Restream). */
-export const DEFAULT_PHRASES = [
+/** Built-in streamer / chat bingo phrases. */
+export const DEFAULT_PHRASES: readonly string[] = [
   'Erster!',
   'Pog',
   'LUL',
@@ -56,10 +56,34 @@ export const DEFAULT_CONFIG: BingoConfig = {
   title: 'Stream Bingo',
   size: 5,
   freeCenter: true,
-  phrases: DEFAULT_PHRASES,
+  phrases: [...DEFAULT_PHRASES],
 };
 
-/** Simple string hash → 32-bit seed for mulberry32. */
+export function clampSize(n: number): number {
+  return Math.min(7, Math.max(3, Math.floor(n) || 5));
+}
+
+export function neededCells(size: number, freeCenter: boolean): number {
+  const total = size * size;
+  return freeCenter && size % 2 === 1 ? total - 1 : total;
+}
+
+export function parsePhrases(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function samePhrases(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i]!.trim() !== b[i]!.trim()) return false;
+  }
+  return true;
+}
+
+/** FNV-1a-ish string hash → uint32 seed. */
 export function hashSeed(str: string): number {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -69,7 +93,7 @@ export function hashSeed(str: string): number {
   return h >>> 0;
 }
 
-/** Seeded PRNG (mulberry32). */
+/** mulberry32 PRNG. */
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -81,38 +105,30 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-export function shuffle<T>(arr: T[], rng: () => number = Math.random): T[] {
+export function shuffle<T>(arr: readonly T[], rng: () => number = Math.random): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+    [a[i], a[j]] = [a[j]!, a[i]!];
   }
   return a;
 }
 
-export function neededCells(size: number, freeCenter: boolean): number {
-  const total = size * size;
-  return freeCenter && size % 2 === 1 ? total - 1 : total;
-}
-
 export function buildBoard(config: BingoConfig): BingoCell[] {
-  const { size, freeCenter, phrases, seed } = config;
+  const size = clampSize(config.size);
+  const freeCenter = config.freeCenter;
   const total = size * size;
   const need = neededCells(size, freeCenter);
-  const rng = seed ? mulberry32(hashSeed(seed)) : Math.random;
+  const rng = config.seed ? mulberry32(hashSeed(config.seed)) : Math.random;
 
-  let pool = phrases.map((p) => p.trim()).filter(Boolean);
-  if (pool.length === 0) {
-    pool = [...DEFAULT_PHRASES];
-  }
+  let pool = config.phrases.map((p) => p.trim()).filter(Boolean);
+  if (pool.length === 0) pool = [...DEFAULT_PHRASES];
 
-  // If not enough phrases, cycle through them.
   const picked: string[] = [];
   const shuffled = shuffle(pool, rng);
   for (let i = 0; i < need; i++) {
-    picked.push(shuffled[i % shuffled.length]);
+    picked.push(shuffled[i % shuffled.length]!);
   }
-  // Reshuffle so repeats aren't clustered when cycling.
   const texts = shuffle(picked, rng);
 
   const center = freeCenter && size % 2 === 1 ? Math.floor(total / 2) : -1;
@@ -130,60 +146,162 @@ export function buildBoard(config: BingoConfig): BingoCell[] {
   return cells;
 }
 
-/** Check rows, columns, both diagonals. Returns winning cell indices or null. */
-export function findWin(marked: boolean[], size: number): number[] | null {
-  // Rows
+/** Rows, columns, both diagonals. Returns winning indices or null. */
+export function findWin(marked: readonly boolean[], size: number): number[] | null {
   for (let r = 0; r < size; r++) {
-    const line: number[] = [];
-    for (let c = 0; c < size; c++) line.push(r * size + c);
+    const line = Array.from({ length: size }, (_, c) => r * size + c);
     if (line.every((i) => marked[i])) return line;
   }
-  // Columns
   for (let c = 0; c < size; c++) {
-    const line: number[] = [];
-    for (let r = 0; r < size; r++) line.push(r * size + c);
+    const line = Array.from({ length: size }, (_, r) => r * size + c);
     if (line.every((i) => marked[i])) return line;
   }
-  // Main diagonal
   {
-    const line: number[] = [];
-    for (let i = 0; i < size; i++) line.push(i * size + i);
+    const line = Array.from({ length: size }, (_, i) => i * size + i);
     if (line.every((i) => marked[i])) return line;
   }
-  // Anti diagonal
   {
-    const line: number[] = [];
-    for (let i = 0; i < size; i++) line.push(i * size + (size - 1 - i));
+    const line = Array.from({ length: size }, (_, i) => i * size + (size - 1 - i));
     if (line.every((i) => marked[i])) return line;
   }
   return null;
 }
 
-/** Encode config for shareable URL (compact base64url JSON). */
-export function encodeConfig(config: BingoConfig): string {
-  const payload = {
-    t: config.title,
-    s: config.size,
-    f: config.freeCenter ? 1 : 0,
-    p: config.phrases,
-    seed: config.seed || undefined,
-  };
-  const json = JSON.stringify(payload);
+// ── Share tokens ────────────────────────────────────────────────────────────
+// Format:
+//   3.<base64url>  deflate-raw(pack)
+//   2.<base64url>  pack (no compression)
+//   legacy         base64url(JSON {t,s,f,p,seed})
+//
+// pack = size \0 free(0|1) \0 title? \0 seed? \0 phrases(\n)?
+// Defaults (title, phrases) are omitted to keep common links tiny.
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
   const b64 =
-    typeof btoa !== 'undefined'
-      ? btoa(unescape(encodeURIComponent(json)))
-      : Buffer.from(json, 'utf8').toString('base64');
+    typeof btoa !== 'undefined' ? btoa(bin) : Buffer.from(bytes).toString('base64');
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-export function decodeConfig(encoded: string): BingoConfig | null {
+function base64UrlToBytes(encoded: string): Uint8Array {
+  const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  if (typeof atob !== 'undefined') {
+    const bin = atob(b64 + pad);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  return new Uint8Array(Buffer.from(b64 + pad, 'base64'));
+}
+
+function utf8Encode(str: string): Uint8Array {
+  return new TextEncoder().encode(str);
+}
+
+function utf8Decode(bytes: Uint8Array): string {
+  return new TextDecoder().decode(bytes);
+}
+
+export function packConfig(config: BingoConfig): string {
+  const size = clampSize(config.size);
+  const free = config.freeCenter ? '1' : '0';
+  const title =
+    config.title && config.title !== DEFAULT_CONFIG.title ? config.title.slice(0, 80) : '';
+  const seed = config.seed?.trim() || '';
+  const phrases = samePhrases(config.phrases, DEFAULT_PHRASES)
+    ? ''
+    : config.phrases.map((p) => p.trim()).filter(Boolean).join('\n');
+  return [String(size), free, title, seed, phrases].join('\0');
+}
+
+export function unpackConfig(raw: string): BingoConfig | null {
   try {
-    const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
-    const json =
-      typeof atob !== 'undefined'
-        ? decodeURIComponent(escape(atob(b64 + pad)))
-        : Buffer.from(b64 + pad, 'base64').toString('utf8');
+    const parts = raw.split('\0');
+    if (parts.length < 2) return null;
+    const size = clampSize(Number(parts[0]) || 5);
+    const freeCenter = parts[1] !== '0';
+    const title = (parts[2] || DEFAULT_CONFIG.title).slice(0, 80) || DEFAULT_CONFIG.title;
+    const seed = parts[3]?.trim() || undefined;
+    const phraseBlock = parts[4] ?? '';
+    const phrases = phraseBlock
+      ? phraseBlock.split('\n').map((p) => p.trim()).filter(Boolean)
+      : [...DEFAULT_PHRASES];
+    return {
+      title,
+      size,
+      freeCenter,
+      phrases: phrases.length ? phrases : [...DEFAULT_PHRASES],
+      seed,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function deflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
+  if (typeof CompressionStream === 'undefined') return null;
+  try {
+    const stream = new Blob([bytes as BlobPart])
+      .stream()
+      .pipeThrough(new CompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
+  if (typeof DecompressionStream === 'undefined') return null;
+  try {
+    const stream = new Blob([bytes as BlobPart])
+      .stream()
+      .pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/** Encode config → short share token (`3.…` or `2.…`). */
+export async function encodeConfig(config: BingoConfig): Promise<string> {
+  const packed = packConfig(config);
+  const raw = utf8Encode(packed);
+  const compressed = await deflateRaw(raw);
+  if (compressed && compressed.length < raw.length) {
+    return '3.' + bytesToBase64Url(compressed);
+  }
+  return '2.' + bytesToBase64Url(raw);
+}
+
+export function encodeConfigSync(config: BingoConfig): string {
+  return '2.' + bytesToBase64Url(utf8Encode(packConfig(config)));
+}
+
+/** Decode share token (v3 / v2 / legacy JSON). */
+export async function decodeConfig(encoded: string): Promise<BingoConfig | null> {
+  const token = encoded.trim();
+  if (!token) return null;
+
+  try {
+    if (token.startsWith('3.')) {
+      const inflated = await inflateRaw(base64UrlToBytes(token.slice(2)));
+      if (!inflated) return null;
+      return unpackConfig(utf8Decode(inflated));
+    }
+    if (token.startsWith('2.')) {
+      return unpackConfig(utf8Decode(base64UrlToBytes(token.slice(2))));
+    }
+    return decodeLegacyConfig(token);
+  } catch {
+    return null;
+  }
+}
+
+function decodeLegacyConfig(encoded: string): BingoConfig | null {
+  try {
+    const json = utf8Decode(base64UrlToBytes(encoded));
     const data = JSON.parse(json) as {
       t?: string;
       s?: number;
@@ -191,12 +309,12 @@ export function decodeConfig(encoded: string): BingoConfig | null {
       p?: string[];
       seed?: string;
     };
-    const size = Math.min(7, Math.max(3, Number(data.s) || 5));
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
     return {
       title: (data.t || DEFAULT_CONFIG.title).slice(0, 80),
-      size,
+      size: clampSize(Number(data.s) || 5),
       freeCenter: data.f !== 0,
-      phrases: Array.isArray(data.p) ? data.p.map(String).filter(Boolean) : DEFAULT_PHRASES,
+      phrases: Array.isArray(data.p) ? data.p.map(String).filter(Boolean) : [...DEFAULT_PHRASES],
       seed: data.seed,
     };
   } catch {

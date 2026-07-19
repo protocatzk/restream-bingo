@@ -5,4 +5,26 @@ import BingoApp from '../components/BingoApp.astro';
 
 <Layout title="Restream Bingo">
   <BingoApp />
+  <p class="home-presets">
+    Spezial-Boards: <a href={`${import.meta.env.BASE_URL}dkm/`}>/dkm</a>
+  </p>
 </Layout>
+
+<style>
+  .home-presets {
+    max-width: 920px;
+    margin: -0.75rem auto 2rem;
+    padding: 0 1rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .home-presets a {
+    color: var(--accent-hover);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .home-presets a:hover {
+    text-decoration: underline;
+  }
+</style>

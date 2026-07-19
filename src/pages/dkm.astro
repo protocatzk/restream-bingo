@@ -1,0 +1,44 @@
+---
+import Layout from '../layouts/Layout.astro';
+import BingoApp from '../components/BingoApp.astro';
+import { DKM_PRESET } from '../lib/presets';
+import { encodeConfigSync } from '../lib/bingo';
+
+const preset = DKM_PRESET;
+// Stable share token for this board (sync pack format, no deflate needed for short payloads)
+const shareToken = encodeConfigSync(preset.config);
+const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+const path = `${base}${preset.slug}/`;
+---
+
+<Layout title={preset.pageTitle} description="DKM Stream-Bingo – gleiches Board für alle.">
+  <BingoApp
+    brand={preset.brand}
+    subtitle={preset.subtitle}
+    presetId={preset.slug}
+    presetConfig={preset.config}
+    shareToken={shareToken}
+    locked
+  />
+  <p class="preset-meta">
+    Pfad: <code>{path}</code>
+    · Token: <code title="Encoded board config">{shareToken}</code>
+  </p>
+</Layout>
+
+<style>
+  .preset-meta {
+    max-width: 920px;
+    margin: -0.5rem auto 2rem;
+    padding: 0 1rem;
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    word-break: break-all;
+  }
+  .preset-meta code {
+    font-family: var(--mono);
+    color: var(--accent-hover);
+    font-size: 0.72rem;
+  }
+</style>
